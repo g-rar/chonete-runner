@@ -1,17 +1,21 @@
+import asyncio
+
+import requests
 from bot import bot
 import random
 from interactions import CommandContext, Option, OptionType, SelectMenu, \
     SelectOption, Component, Embed, ComponentContext, Message, EmbedField
+from srcomapi.exceptions import APIRequestException
 import srcomapi
 import srcomapi.datatypes as src_dt
 from datetime import datetime
 from interactions.ext.wait_for import wait_for_component
 from asyncio.exceptions import TimeoutError
 from pprint import pformat
-from testConsts import testPlayer
+from progress import progressBar
 import os
 
-sr_api = srcomapi.SpeedrunCom(api_key=os.getenv("SCROM_API_KEY"))
+sr_api = srcomapi.SpeedrunCom(api_key=os.getenv("SRCOM_API_KEY"))
 sr_api.debug = 1
 
 
@@ -102,8 +106,12 @@ async def buscarEnCategoria(ctx: CommandContext, juego: str):
 
     await cat_select_ctx.edit(f"Voy a buscar en la categoría `{category.name}`", components=[])
 
-    leaderBoard = src_dt.Leaderboard(sr_api, data=sr_api.get(
-        f"leaderboards/{game.id}/category/{category_id}?embed=players"))
+    try:
+        leaderBoard = src_dt.Leaderboard(sr_api, data=sr_api.get(
+            f"leaderboards/{game.id}/category/{category_id}?embed=players"))
+    except APIRequestException as e:
+        await ctx.send("No se pudo sacar la info del Leaderboard :thinking:")
+        return
     playersData = leaderBoard.players['data']
 
     def isCostarrican(player: dict):
@@ -129,6 +137,97 @@ async def buscarEnCategoria(ctx: CommandContext, juego: str):
     except:
         await cat_select_msg.reply(f'''py\n{pformat(costarricanPlayers)}''')
 
+def checkRuns(d:list[dict]):
+    cr_runners = []
+    for elem in d:
+        players = (elem
+            .get("players",{})
+            .get("data",{}))
+        for player in players:
+            location = player.get("location",{})
+            if location == None: 
+                continue
+            code = location.get("country",{}).get("code",{})
+            if code == "cr":
+                cr_runners.append(elem)
+    return cr_runners
+
+@bot.command(
+    name="buscar_en_juego",
+    description="Buscar en todas las categorias de un juego jugadores ticos",
+    options=[
+        Option(name="juego", description="Nombre o así del Juego para buscar",
+                type=OptionType.STRING, required=True)
+    ]
+)
+async def buscarEnJuego(ctx: CommandContext, juego: str):
+    games = sr_api.search(src_dt.Game, {"name": juego})
+    # having this as a dictionary would be useful
+
+    if len(games) == 0:
+        await ctx.send(f"No encontré juegos con `{juego}` 🤷‍♂️")
+        return
+
+    # TODO add if there's only one game
+    games_com = SelectMenu(
+        custom_id=generateId("games_search_"),
+        options=[
+            SelectOption(label=game.name, value=game.abbreviation)
+            for game in games
+        ],
+        placeholder="Elegí el juego en el que querés buscar"
+    )
+    games_select_msg = await ctx.send(components=games_com)
+    gameSelectCtx = await wait_component_with_custom_id(games_com, games_select_msg)
+    if not gameSelectCtx:
+        return
+    gameAbb = gameSelectCtx.data.values[0]
+    game: src_dt.Game = next(
+        filter(lambda g: g.abbreviation == gameAbb, games))
+
+    await ctx.edit(f"Elegiste el juego `{game.name}`", components=[])
+
+    categories_call = f'https://www.speedrun.com/api/v1/games/{game.id}/categories'
+    categories = requests.get(categories_call).json()
+    categoryMsg = await ctx.send(
+        f"Hay {len(categories.get('data', []))} categorías en ese juego.")
+    costarricenses = []
+    for category in categories.get("data",[]):
+        # await categoryMsg.edit(
+        #     content=categoryMsg.content + f"\n - Buscando en categoría `{category['name']}`")
+        call = ('https://www.speedrun.com/api/v1/runs?embed=players'
+           f'&game={game.id}'
+           f'&category={category["id"]}'
+            '&orderby=date'
+            '&direction=desc'
+            '&max=200')
+        while True:
+            response = requests.get(call)
+            j = response.json()
+            if "data" not in j:
+                break
+            cr_runners = checkRuns(j.get("data",[]))
+            if len(cr_runners):
+                costarricenses += cr_runners
+            if j["pagination"]["size"] != 200:
+                break
+            for link in j['pagination']['links']:
+                if link.get('rel') == 'next':
+                    call = link.get('uri')
+                    break
+            break
+    if len(costarricenses):
+        runners = {}
+        await ctx.send("Se encontraron estos Runs de jugadores ticos")
+        for run in costarricenses:
+            runners.setdefault(
+                run["players"]['data'][0]["id"],
+                {**run["players"]['data'][0], "runCount":0}
+            )["runCount"] += 1
+        for runner in runners.values():
+            await ctx.send(embeds=getPlayerEmbed(runner))
+    else:
+        await ctx.send("No se encontraron jugadores costarricenses :c")
 
 # @bot.command(
 #     name="test_embed",
@@ -170,9 +269,15 @@ def getPlayerEmbed(p: dict):
                 name="Rol",
                 value=p.get('role', 'N/A').capitalize(),
                 inline=True
-            )
+            ),
         ]
     )
+    if p.get('runCount'):
+        embed.add_field(
+            name="Cuenta de Runs",
+            value=p.get('runCount', '0'),
+            inline=True
+        )
     srcom_links = {
         'games': 'Juegos',
         'runs': 'Runs',

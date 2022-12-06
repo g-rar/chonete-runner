@@ -3,6 +3,8 @@ import logging
 import interactions
 from interactions.ext import wait_for, files
 
+from dotenv import load_dotenv
+load_dotenv()
 import os
 
 testGuilds = list(map(lambda x: int(x), os.getenv("TEST_GUILDS").split(","))) if os.getenv("TEST_GUILDS") else []
@@ -17,13 +19,6 @@ class BotSettings:
     DEV = bool(os.getenv("DEV"))
 
 # TODO add prefifx to commands that use it
-
-print(BotSettings.TOKEN)
-print(BotSettings.DEV_ID)
-print(BotSettings.PREFIX)
-print(BotSettings.DB_NAME)
-print(BotSettings.TEST_GUILDS)
-print(BotSettings.DEV)
 
 bot = interactions.Client(token=BotSettings.TOKEN)
 httpClient = interactions.HTTPClient(BotSettings.TOKEN)
